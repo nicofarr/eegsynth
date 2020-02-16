@@ -2,9 +2,9 @@
 
 # This module maps a single control signal onto multiple bilinear mixed signals
 #
-# This software is part of the EEGsynth project, see https://github.com/eegsynth/eegsynth
+# This software is part of the EEGsynth project, see <https://github.com/eegsynth/eegsynth>.
 #
-# Copyright (C) 2018 EEGsynth project
+# Copyright (C) 2018-2020 EEGsynth project
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -32,50 +32,50 @@ import threading
 import time
 
 if hasattr(sys, 'frozen'):
-    basis = sys.executable
-elif sys.argv[0] != '':
-    basis = sys.argv[0]
+    path = os.path.split(sys.executable)[0]
+    file = os.path.split(sys.executable)[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__' and sys.argv[0] != '':
+    path = os.path.split(sys.argv[0])[0]
+    file = os.path.split(sys.argv[0])[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__':
+    path = os.path.abspath('')
+    file = os.path.split(path)[-1] + '.py'
+    name = os.path.splitext(file)[0]
 else:
-    basis = './'
-installed_folder = os.path.split(basis)[0]
+    path = os.path.split(__file__)[0]
+    file = os.path.split(__file__)[-1]
+    name = os.path.splitext(file)[0]
 
 # eegsynth/lib contains shared modules
-sys.path.insert(0, os.path.join(installed_folder, '../../lib'))
+sys.path.insert(0, os.path.join(path, '../../lib'))
 import EEGsynth
 
 parser = argparse.ArgumentParser()
-parser.add_argument("-i", "--inifile", default=os.path.join(installed_folder,
-                                                            os.path.splitext(os.path.basename(__file__))[0] + '.ini'), help="optional name of the configuration file")
+parser.add_argument("-i", "--inifile", default=os.path.join(path, name + '.ini'), help="name of the configuration file")
 args = parser.parse_args()
 
 config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
 config.read(args.inifile)
 
 try:
-    r = redis.StrictRedis(host=config.get('redis', 'hostname'), port=config.getint('redis', 'port'), db=0)
+    r = redis.StrictRedis(host=config.get('redis', 'hostname'), port=config.getint('redis', 'port'), db=0, charset='utf-8', decode_responses=True)
     response = r.client_list()
 except redis.ConnectionError:
-    print("Error: cannot connect to redis server")
-    exit()
+    raise RuntimeError("cannot connect to Redis server")
 
 # combine the patching from the configuration file and Redis
 patch = EEGsynth.patch(config, r)
 
-# this can be used to selectively show parameters that have changed
-def show_change(key, val):
-    if (key not in show_change.previous) or (show_change.previous[key]!=val):
-        print(key, "=", val)
-        show_change.previous[key] = val
-        return True
-    else:
-        return False
-show_change.previous = {}
+# this can be used to show parameters that have changed
+monitor = EEGsynth.monitor(name=name, debug=patch.getint('general','debug'))
 
-# this determines how much debugging information gets printed
-debug = patch.getint('general', 'debug')
-delay = patch.getfloat('general', 'delay')
-number = patch.getint('switch', 'number', default=3)
-prefix = patch.getstring('output', 'prefix')
+# get the options from the configuration file
+debug   = patch.getint('general', 'debug')
+delay   = patch.getfloat('general', 'delay')
+number  = patch.getint('switch', 'number', default=3)
+prefix  = patch.getstring('output', 'prefix')
 
 # the scale and offset are used to map the Redis values to internal values
 scale_input      = patch.getfloat('scale', 'input', default=1.)
@@ -102,7 +102,9 @@ edge = 0
 previous = 'no'
 
 while True:
-    # measure the time that it takes
+    monitor.loop()
+
+    # measure the time to correct for the slip
     start = time.time()
 
     # these can change on the fly
@@ -110,8 +112,8 @@ while True:
     switch_time = EEGsynth.rescale(switch_time, slope=scale_time, offset=offset_time)
     switch_precision = patch.getfloat('switch', 'precision', default=0.1)
     switch_precision = EEGsynth.rescale(switch_precision, slope=scale_precision, offset=offset_precision)
-    show_change('time', switch_time)
-    show_change('precision', switch_precision)
+    monitor.update('time', switch_time)
+    monitor.update('precision', switch_precision)
 
     # get the input value and scale between 0 and 1
     input = patch.getfloat('input', 'channel', default=np.NaN)
@@ -129,8 +131,7 @@ while True:
         lower_treshold = 0. - switch_precision
         upper_treshold = 1. + switch_precision
 
-    if debug > 1:
-        print('------------------------------------------------------------------')
+    monitor.debug('------------------------------------------------------------------')
 
     # is there a reason to change?
     if even(edge):
@@ -155,8 +156,7 @@ while True:
         dwelltime = 0
     else:
         dwelltime += delay
-        if debug > 1:
-            print('dwelling for', dwelltime)
+        monitor.debug('dwelling for', dwelltime)
     previous = change
 
     # is the dwelltime long enough?
@@ -170,8 +170,7 @@ while True:
         # send the edge number as an integer value to Redis
         key = '%s.%s.edge' % (prefix, patch.getstring('input', 'channel'))
         patch.setvalue(key, edge)
-        if debug > 1:
-            print('switch to edge', edge)
+        monitor.debug('switch to edge', edge)
 
     channel_val = [0. for i in range(number)]
     for this in range(number):
@@ -188,10 +187,10 @@ while True:
 
     if debug > 0:
         # print them all on a single line, this is Python 2 specific
-        print(('edge=%2d' % edge), end=' ')
+        monitor.print(('edge=%2d' % edge), end=' ')
         for key, val in zip(channel_name, channel_val):
-            print((' %s = %0.2f' % (key, val)), end=' ')
-        print('')  # force a newline
+            monitor.print((' %s = %0.2f' % (key, val)), end=' ')
+        monitor.print('')  # force a newline
 
     # this is a short-term approach, estimating the sleep for every block
     # this code is shared between generatesignal, playback and playbackctrl

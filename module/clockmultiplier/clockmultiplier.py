@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-# This software is part of the EEGsynth project, see https://github.com/eegsynth/eegsynth
+# This software is part of the EEGsynth project, see <https://github.com/eegsynth/eegsynth>.
 #
-# Copyright (C) 2018 EEGsynth project
+# Copyright (C) 2018-2020 EEGsynth project
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -27,40 +27,25 @@ import threading
 import time
 
 if hasattr(sys, 'frozen'):
-    basis = sys.executable
-elif sys.argv[0] != '':
-    basis = sys.argv[0]
+    path = os.path.split(sys.executable)[0]
+    file = os.path.split(sys.executable)[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__' and sys.argv[0] != '':
+    path = os.path.split(sys.argv[0])[0]
+    file = os.path.split(sys.argv[0])[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__':
+    path = os.path.abspath('')
+    file = os.path.split(path)[-1] + '.py'
+    name = os.path.splitext(file)[0]
 else:
-    basis = './'
-installed_folder = os.path.split(basis)[0]
+    path = os.path.split(__file__)[0]
+    file = os.path.split(__file__)[-1]
+    name = os.path.splitext(file)[0]
 
 # eegsynth/lib contains shared modules
-sys.path.insert(0, os.path.join(installed_folder, '../../lib'))
+sys.path.insert(0, os.path.join(path, '../../lib'))
 import EEGsynth
-
-parser = argparse.ArgumentParser()
-parser.add_argument("-i", "--inifile", default=os.path.join(installed_folder, os.path.splitext(os.path.basename(__file__))[0] + '.ini'), help="optional name of the configuration file")
-args = parser.parse_args()
-
-config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-config.read(args.inifile)
-
-try:
-    r = redis.StrictRedis(host=config.get('redis', 'hostname'), port=config.getint('redis', 'port'), db=0)
-    response = r.client_list()
-except redis.ConnectionError:
-    print("Error: cannot connect to redis server")
-    exit()
-
-# combine the patching from the configuration file and Redis
-patch = EEGsynth.patch(config, r)
-
-# this determines how much debugging information gets printed
-debug = patch.getint('general', 'debug')
-
-# for keeping track of the number of received triggers
-count = 0
-
 
 class TriggerThread(threading.Thread):
     def __init__(self, redischannel, rate, lrate):
@@ -99,11 +84,11 @@ class TriggerThread(threading.Thread):
                     self.timer = []
 
                     if self.previous == None:
-                        # not yet possible to estimate the interval
+                        # it is not yet possible to estimate the interval
                         self.previous = now
                         continue
                     elif self.interval == None:
-                        # first estimate of the interval between triggers
+                        # this is the first estimate of the interval between triggers
                         self.interval = now - self.previous
                         self.previous = now
                     else:
@@ -112,42 +97,120 @@ class TriggerThread(threading.Thread):
                         self.interval = (1 - self.lrate) * self.interval + self.lrate * (now - self.previous)
                         self.previous = now
 
-                    val = item['data']
+                    val = float(item['data'])
+
                     # send the first one immediately
                     patch.setvalue(self.key, val)
 
+                    # schedule the subsequent ones after some time
                     for number in range(1, self.rate):
-                        # schedule the subsequent ones after some time
                         delay = number * (self.interval / self.rate)
                         t = threading.Timer(delay, patch.setvalue, args=[self.key, val])
                         t.start()
                         self.timer.append(t)
 
-channel = patch.getstring('clock', 'channel', multiple=True)
-multiplier = patch.getint('clock', 'rate',  multiple=True)
-learning_rate = patch.getfloat('clock', 'learning_rate')
 
-trigger = []
-for chan in channel:
-    for mult in multiplier:
-        trigger.append(TriggerThread(chan, mult, learning_rate))
-        print("x%d.%s" % (mult, chan))
+def _setup():
+    '''Initialize the module
+    This adds a set of global variables
+    '''
+    global parser, args, config, r, response
 
-# start the thread for each of the triggers
-for thread in trigger:
-    thread.start()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--inifile", default=os.path.join(path, name + '.ini'), help="name of the configuration file")
+    args = parser.parse_args()
 
-try:
+    config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    config.read(args.inifile)
+
+    try:
+        r = redis.StrictRedis(host=config.get('redis', 'hostname'), port=config.getint('redis', 'port'), db=0, charset='utf-8', decode_responses=True)
+        response = r.client_list()
+    except redis.ConnectionError:
+        raise RuntimeError("cannot connect to Redis server")
+
+    # there should not be any local variables in this function, they should all be global
+    if len(locals()):
+        print('LOCALS: ' + ', '.join(locals().keys()))
+
+
+def _start():
+    '''Start the module
+    This uses the global variables from setup and adds a set of global variables
+    '''
+    global parser, args, config, r, response
+    global patch, monitor, debug, channels, multipliers, lrate, count, triggers, channel, multiplier, thread
+
+    # combine the patching from the configuration file and Redis
+    patch = EEGsynth.patch(config, r)
+
+    # this can be used to show parameters that have changed
+    monitor = EEGsynth.monitor(name=name, debug=patch.getint('general','debug'))
+
+    # get the options from the configuration file
+    debug       = patch.getint('general', 'debug')
+    channels    = patch.getstring('clock', 'channel', multiple=True)
+    multipliers = patch.getint('clock', 'rate',  multiple=True)
+    lrate       = patch.getfloat('clock', 'learning_rate', default=1)
+
+    # for keeping track of the number of received triggers
+    count = 0
+
+    triggers = []
+    for channel in channels:
+        for multiplier in multipliers:
+            triggers.append(TriggerThread(channel, multiplier, lrate))
+            monitor.debug("x%d.%s" % (multiplier, channel))
+
+    # start the thread for each of the triggers
+    for thread in triggers:
+        thread.start()
+
+    # there should not be any local variables in this function, they should all be global
+    if len(locals()):
+        print('LOCALS: ' + ', '.join(locals().keys()))
+
+
+def _loop_once():
+    '''Run the main loop once
+    This uses the global variables from setup and start, and adds a set of global variables
+    '''
+    global parser, args, config, r, response
+    global patch, monitor, debug, channels, multipliers, lrate, count, triggers, channel, multiplier, thread
+
+    monitor.loop()
+    monitor.update("count", count / len(multipliers))
+    time.sleep(1)
+
+    # there should not be any local variables in this function, they should all be global
+    if len(locals()):
+        print('LOCALS: ' + ', '.join(locals().keys()))
+
+
+def _loop_forever():
+    '''Run the main loop forever
+    '''
     while True:
-        time.sleep(1)
-        if debug > 0:
-            print("count =", count / len(multiplier))
+        _loop_once()
 
-except KeyboardInterrupt:
-    print("Closing threads")
-    for thread in trigger:
+
+def _stop():
+    '''Stop and clean up on SystemExit, KeyboardInterrupt
+    '''
+    global monitor, triggers, r
+
+    monitor.success('Closing threads')
+    for thread in triggers:
         thread.stop()
     r.publish('CLOCKMULTIPLIER_UNBLOCK', 1)
-    for thread in trigger:
+    for thread in triggers:
         thread.join()
-    sys.exit()
+
+
+if __name__ == '__main__':
+    _setup()
+    _start()
+    try:
+        _loop_forever()
+    except:
+        _stop()

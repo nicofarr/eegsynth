@@ -24,10 +24,9 @@ The previous resulted in a working application, but it would not find any of the
 sudo apt-get install jackd2
 ```
 
-
 ## Getting MidoOSC running on macOS
 
-I am using [macports](https://www.macports.org) as package manager on macOS.
+When using [macports](https://www.macports.org) as package manager on macOS, you can do the following.
 
 ```
 sudo port install liblo
@@ -40,7 +39,7 @@ cd MidiOSC
 scons
 ```
 
-The *pyliblo* Pthon package is only needed for testing the example.py  script provided in MidiOSC.
+The _pyliblo_ Pthon package is only needed for testing the example.py script provided in MidiOSC.
 
 I had to make the following changes to the SConstruct file to deal with the liblo header and library being in /opt/local, which is the default place for macports.
 
@@ -65,7 +64,3 @@ index 9bb9c7f..2dde119 100644
 -env.Program('midiosc', ['main.cpp', 'midiinput.cpp', 'RtMidi.cpp', 'anyoption.cpp', 'options.cpp'], LIBS=libs)
 +env.Program('midiosc', ['main.cpp', 'midiinput.cpp', 'RtMidi.cpp', 'anyoption.cpp', 'options.cpp'], LIBS=libs, LIBPATH='/opt/local/lib')
 ```
-
-## Translating messages
-
-The EEGsynth.midiwrapper class translates [mido](https://mido.readthedocs.org/en/latest/) messages automatically to OSC messages. The OSC messages are formatted such that the MidiOSC application will convert them back to the appropriate MIDI message on the receiving computer.

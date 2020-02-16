@@ -1,6 +1,6 @@
 # Output MIDI Module
 
-The purpose of this module is to send triggers and control values from Redis to an external MIDI device. The mapping between triggers and control channels can be fully configured in the ini file.
+This module sends triggers and control values from Redis to an external MIDI device. The mapping between triggers and control channels can be fully configured in the ini file.
 
 In the EEGsynth we are using two different mechanisms for communication. Continuous control channels are represented in Redis using *set/get*, which allow relatively slowly changing values to be represented persistently. Triggers are represented in Redis using *publish/subscribe*, which allows precise timing of events to be synchronized.
 
@@ -9,7 +9,9 @@ In the EEGsynth we are using two different mechanisms for communication. Continu
 
 Under the `[trigger]` section you specify the mapping between MIDI messages and Redis messages. The MIDI message are triggered immediately by Redis messages.
 
-You can specify MIDI *note_on* messages using `noteXXX` where XXX is the MIDI note number. For example you can specify `note060` to play the [C4](https://newt.phys.unsw.edu.au/jw/notes.html)).
+You can specify MIDI *note_on* messages using `noteXXX` where XXX is the MIDI note number and the Redis value is mapped onto velocity. For example you can specify `note060` to play the [C4](https://newt.phys.unsw.edu.au/jw/notes.html)).
+
+You can also specify MIDI *note_on* messages using `note` without number, in which case the Redis value is mapped onto pitch and velocity is set to 127. This allows to map a continuous control channel in Redis onto MIDI pitch, which e.g. in the Doepfer A190-3 is subsequently mapped onto the CV1 output voltage.
 
 You can specify MIDI *control_change* and *polytoch* messages using `controlXXX` and `polytouchXXX`, where XXX is the MIDI control channel.
 

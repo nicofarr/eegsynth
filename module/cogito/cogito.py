@@ -2,9 +2,9 @@
 
 # Cogito processes data for the COGITO project by Daniela de Paulis
 #
-# This software is part of the EEGsynth project, see https://github.com/eegsynth/eegsynth
+# This software is part of the EEGsynth project, see <https://github.com/eegsynth/eegsynth>.
 #
-# Copyright (C) 2017 EEGsynth project
+# Copyright (C) 2017-2020 EEGsynth project
 #
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -19,7 +19,6 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-from copy import copy
 import configparser
 import argparse
 import numpy as np
@@ -28,195 +27,226 @@ import pandas as pd
 import sys
 import time
 import redis
+from copy import copy
 
 if hasattr(sys, 'frozen'):
-    basis = sys.executable
-elif sys.argv[0] != '':
-    basis = sys.argv[0]
+    path = os.path.split(sys.executable)[0]
+    file = os.path.split(sys.executable)[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__' and sys.argv[0] != '':
+    path = os.path.split(sys.argv[0])[0]
+    file = os.path.split(sys.argv[0])[-1]
+    name = os.path.splitext(file)[0]
+elif __name__=='__main__':
+    path = os.path.abspath('')
+    file = os.path.split(path)[-1] + '.py'
+    name = os.path.splitext(file)[0]
 else:
-    basis = './'
-installed_folder = os.path.split(basis)[0]
+    path = os.path.split(__file__)[0]
+    file = os.path.split(__file__)[-1]
+    name = os.path.splitext(file)[0]
 
 # eegsynth/lib contains shared modules
-sys.path.insert(0, os.path.join(installed_folder, '../../lib'))
+sys.path.insert(0, os.path.join(path, '../../lib'))
 import EEGsynth
 import FieldTrip
 
-parser = argparse.ArgumentParser()
-parser.add_argument("-i", "--inifile", default=os.path.join(installed_folder, os.path.splitext(os.path.basename(__file__))[0] + '.ini'), help="optional name of the configuration file")
-args = parser.parse_args()
 
-config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
-config.read(args.inifile)
+def _setup():
+    '''Initialize the module
+    This adds a set of global variables
+    '''
+    global parser, args, config, r, response, patch, monitor, debug, ft_host, ft_port, ft_input, ft_output
 
-try:
-    r = redis.StrictRedis(host=config.get('redis','hostname'), port=config.getint('redis','port'), db=0)
-    response = r.client_list()
-except redis.ConnectionError:
-    print("Error: cannot connect to redis server")
-    exit()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-i", "--inifile", default=os.path.join(path, name + '.ini'), help="name of the configuration file")
+    args = parser.parse_args()
 
-# combine the patching from the configuration file and Redis
-patch = EEGsynth.patch(config, r)
+    config = configparser.ConfigParser(inline_comment_prefixes=('#', ';'))
+    config.read(args.inifile)
 
-# this determines how much debugging information gets printed
-debug = patch.getint('general', 'debug')
+    try:
+        r = redis.StrictRedis(host=config.get('redis', 'hostname'), port=config.getint('redis', 'port'), db=0, charset='utf-8', decode_responses=True)
+        response = r.client_list()
+    except redis.ConnectionError:
+        raise RuntimeError("cannot connect to Redis server")
 
-# this is the timeout for the FieldTrip buffer
-timeout = patch.getfloat('input_fieldtrip','timeout')
+    # combine the patching from the configuration file and Redis
+    patch = EEGsynth.patch(config, r)
 
-try:
-    ftc_host = patch.getstring('input_fieldtrip', 'hostname')
-    ftc_port = patch.getint('input_fieldtrip', 'port')
-    if debug > 0:
-        print('Trying to connect to buffer on %s:%i ...' % (ftc_host, ftc_port))
-    ft_input = FieldTrip.Client()
-    ft_input.connect(ftc_host, ftc_port)
-    if debug > 0:
-        print("Connected to input FieldTrip buffer")
-except:
-    print("Error: cannot connect to input FieldTrip buffer")
-    exit()
+    # this can be used to show parameters that have changed
+    monitor = EEGsynth.monitor(name=name, debug=patch.getint('general','debug'))
 
-try:
-    ftc_host = patch.getstring('output_fieldtrip', 'hostname')
-    ftc_port = patch.getint('output_fieldtrip', 'port')
-    if debug > 0:
-        print('Trying to connect to buffer on %s:%i ...' % (ftc_host, ftc_port))
-    ft_output = FieldTrip.Client()
-    ft_output.connect(ftc_host, ftc_port)
-    if debug > 0:
-        print("Connected to output FieldTrip buffer")
-except:
-    print("Error: cannot connect to output FieldTrip buffer")
-    exit()
+    # get the options from the configuration file
+    debug   = patch.getint('general', 'debug')
 
-# get the input and output options
-input_number, input_channel = list(map(list, list(zip(*config.items('input_channel')))))
-output_number, output_channel = list(map(list, list(zip(*config.items('output_channel')))))
+    try:
+        ft_host = patch.getstring('input_fieldtrip', 'hostname')
+        ft_port = patch.getint('input_fieldtrip', 'port')
+        monitor.success('Trying to connect to buffer on %s:%i ...' % (ft_host, ft_port))
+        ft_input = FieldTrip.Client()
+        ft_input.connect(ft_host, ft_port)
+        monitor.success('Connected to input FieldTrip buffer')
+    except:
+        raise RuntimeError("cannot connect to input FieldTrip buffer")
 
-# convert to integer and make the indices zero-offset
-input_number = [int(number)-1 for number in input_number]
-output_number = [int(number)-1 for number in output_number]
+    try:
+        ft_host = patch.getstring('output_fieldtrip', 'hostname')
+        ft_port = patch.getint('output_fieldtrip', 'port')
+        monitor.success('Trying to connect to buffer on %s:%i ...' % (ft_host, ft_port))
+        ft_output = FieldTrip.Client()
+        ft_output.connect(ft_host, ft_port)
+        monitor.success('Connected to output FieldTrip buffer')
+    except:
+        raise RuntimeError("cannot connect to output FieldTrip buffer")
 
-hdr_input = None
-start = time.time()
-while hdr_input is None:
-    if debug > 0:
-        print("Waiting for data to arrive...")
-    if (time.time()-start)>timeout:
-        print("Error: timeout while waiting for data")
-        raise SystemExit
-    hdr_input = ft_input.getHeader()
-    time.sleep(0.2)
 
-if debug > 0:
-    print("Data arrived")
-if debug > 1:
-    print(hdr_input)
-    print(hdr_input.labels)
+def _start():
+    '''Start the module
+    This uses the global variables from setup and adds a set of global variables
+    '''
+    global parser, args, config, r, response, patch, monitor, debug, ft_host, ft_port, ft_input, ft_output
+    global timeout, hdr_input, start, input_number, input_channel, output_number, output_channel, nInputs, number, channel, nOutputs, tmp, sample_rate, window, f_min, f_max, f_offset, scaling, polyorder, profileMin, profileMax, profileCorrection, layout, definition, val, positions, inputscaling, outputscaling, begsample, endsample
 
-# ensure that all input channels have a label
-nInputs = hdr_input.nChannels
-if len(hdr_input.labels) == 0:
-    for i in range(nInputs):
-        hdr_input.labels.append('{}'.format(i+1))
+    # this is the timeout for the FieldTrip buffer
+    timeout = patch.getfloat('input_fieldtrip','timeout', default=30)
 
-# update the labels with the ones specified in the ini file
-for number, channel in zip(input_number, input_channel):
-    if number < nInputs:
-        hdr_input.labels[number] = channel
+    hdr_input = None
+    start = time.time()
+    while hdr_input is None:
+        monitor.info('Waiting for data to arrive...')
+        if (time.time()-start)>timeout:
+            raise RuntimeError("timeout while waiting for data")
+        time.sleep(0.1)
+        hdr_input = ft_input.getHeader()
 
-# update the input channel specification
-input_number = list(range(nInputs))
-input_channel = hdr_input.labels
+    monitor.info('Data arrived')
+    monitor.debug(hdr_input)
+    monitor.debug(hdr_input.labels)
 
-# ensure that all output channels have a label
-nOutputs = max(output_number)+1
-tmp = ['{}'.format(i+1) for i in range(nOutputs)]
-for number, channel in zip(output_number, output_channel):
-    tmp[number] = channel
+    # get the input and output options
+    input_number, input_channel = list(map(list, list(zip(*config.items('input_channel')))))
+    output_number, output_channel = list(map(list, list(zip(*config.items('output_channel')))))
 
-# update the output channel specification
-output_number = list(range(nOutputs))
-output_channel = tmp
+    # convert to integer and make the indices zero-offset
+    input_number = [int(number)-1 for number in input_number]
+    output_number = [int(number)-1 for number in output_number]
 
-if debug > 0:
-    print('===== input channels =====')
+    # ensure that all input channels have a label
+    nInputs = hdr_input.nChannels
+    if len(hdr_input.labels) == 0:
+        hdr_input.labels = list(map(str, range(1, nInputs+1)))
+
+    # update the labels with the ones specified in the ini file
     for number, channel in zip(input_number, input_channel):
-        print(number, '=', channel)
-    print('===== output channels =====')
+        if number < nInputs:
+            hdr_input.labels[number] = channel
+
+    # update the input channel specification
+    input_number = list(range(nInputs))
+    input_channel = hdr_input.labels
+
+    # ensure that all output channels have a label
+    nOutputs = max(output_number)+1
+    tmp = list(map(str, range(1, nOutputs+1)))
     for number, channel in zip(output_number, output_channel):
-        print(number, '=', channel)
+        tmp[number] = channel
 
-sample_rate         = patch.getfloat('cogito', 'sample_rate')
-window              = patch.getfloat('cogito', 'window')
-f_min               = patch.getfloat('cogito', 'f_min')
-f_max               = patch.getfloat('cogito', 'f_max')
-f_offset            = patch.getfloat('cogito', 'f_offset')
-scaling             = patch.getfloat('cogito', 'scaling')
-polyorder           = patch.getint('cogito', 'polyorder',None)
-profileMin          = patch.getfloat('cogito', 'profileMin')
-profileMax          = patch.getfloat('cogito', 'profileMax')
-profileCorrection   = np.loadtxt('Dwingeloo-Transmitter-Profile.txt')
-profileCorrection   = (1. - profileCorrection)*(profileMax-profileMin) + profileMin
-window              = int(round(window*hdr_input.fSample))
+    # update the output channel specification
+    output_number = list(range(nOutputs))
+    output_channel = tmp
 
-# FIXME these are in Hz, but should be mapped to frequency bins
-f_min = int(f_min)
-f_max = int(f_max)
+    if debug > 0:
+        monitor.print('===== input channels =====')
+        for number, channel in zip(input_number, input_channel):
+            monitor.print(number, '=', channel)
+        monitor.print('===== output channels =====')
+        for number, channel in zip(output_number, output_channel):
+            monitor.print(number, '=', channel)
 
-ft_output.putHeader(nOutputs, sample_rate, hdr_input.dataType, labels=output_channel)
+    sample_rate         = patch.getfloat('cogito', 'sample_rate')
+    window              = patch.getfloat('cogito', 'window')
+    f_min               = patch.getfloat('cogito', 'f_min')
+    f_max               = patch.getfloat('cogito', 'f_max')
+    f_offset            = patch.getfloat('cogito', 'f_offset')
+    scaling             = patch.getfloat('cogito', 'scaling')
+    polyorder           = patch.getint('cogito', 'polyorder', default=None)
+    profileMin          = patch.getfloat('cogito', 'profileMin')
+    profileMax          = patch.getfloat('cogito', 'profileMax')
+    profileCorrection   = np.loadtxt('Dwingeloo-Transmitter-Profile.txt')
+    profileCorrection   = (1. - profileCorrection)*(profileMax-profileMin) + profileMin
 
-# Reading EEG layout
-layout = pd.read_csv("gtec_layout.csv", index_col=0)
-definition = 10
-val = layout.loc[:, ['x', 'y', 'z']].values
-val = (val - val.min())/(val.max()-val.min())*definition
-positions = np.round(val).astype(int)
+    f_min = int(f_min/window)
+    f_max = int(f_max/window)
+    window = int(round(window*hdr_input.fSample)) # expressed in samples
 
-if debug > 1:
-    print("nsample", hdr_input.nSamples)
-    print("nchan", hdr_input.nChannels)
-    print("window", window)
+    ft_output.putHeader(nOutputs, sample_rate, hdr_input.dataType, labels=output_channel)
 
-# jump to the end of the stream
-if hdr_input.nSamples-1<window:
-    begsample = 0
-    endsample = window-1
-else:
-    begsample = hdr_input.nSamples-window
-    endsample = hdr_input.nSamples-1
+    # Reading EEG layout
+    layout = pd.read_csv("gtec_layout.csv", index_col=0)
+    definition = 10
+    val = layout.loc[:, ['x', 'y', 'z']].values
+    val = (val - val.min())/(val.max()-val.min())*definition
+    positions = np.round(val).astype(int)
 
-print("STARTING COGITO STREAM")
-while True:
-    start_time = time.time()
+    monitor.debug("nsample", hdr_input.nSamples)
+    monitor.debug("nchan", hdr_input.nChannels)
+    monitor.debug("window", window)
+
+    inputscaling = 0
+    outputscaling = 0
+
+    # jump to the end of the input stream
+    if hdr_input.nSamples<window:
+        begsample = 0
+        endsample = window-1
+    else:
+        begsample = hdr_input.nSamples-window
+        endsample = hdr_input.nSamples-1
+
+
+def _loop_once():
+    '''Run the main loop once
+    This uses the global variables from setup and start, and adds a set of global variables
+    '''
+    global parser, args, config, r, response, patch, monitor, debug, ft_host, ft_port, ft_input, ft_output
+    global timeout, hdr_input, start, input_number, input_channel, output_number, output_channel, nInputs, number, channel, nOutputs, tmp, sample_rate, window, f_min, f_max, f_offset, scaling, polyorder, profileMin, profileMax, profileCorrection, layout, definition, val, positions, inputscaling, outputscaling, begsample, endsample
+    global dat_input, tmpvar, ch, chan_time, original, t, fourier, mask, convert, signal_time, signal, dat_output, write_time
+
+    monitor.loop()
+
+    # determine when we start polling for available data
+    start = time.time()
 
     while endsample>hdr_input.nSamples-1:
         # wait until there is enough data
         time.sleep(patch.getfloat('general', 'delay'))
         hdr_input = ft_input.getHeader()
         if (hdr_input.nSamples-1)<(endsample-window):
-            print("Error: buffer reset detected")
-            raise SystemExit
-        if (time.time()-start_time)>timeout:
-            print("Error: timeout while waiting for data")
-            raise SystemExit
+            raise RuntimeError("buffer reset detected")
+        if (time.time()-start)>timeout:
+            raise RuntimeError("timeout while waiting for data")
 
-    dat_input = ft_input.getData([begsample, endsample])
+    # get the input data
+    dat_input = ft_input.getData([begsample, endsample]).astype(np.double)
 
-    if debug > 1:
-        print('time waiting for data: ' + str((time.time() - start_time) * 1000))
+    if inputscaling==0:
+        tmp = dat_input - dat_input.mean(axis=0)
+        tmpvar = max(tmp.var(axis=0))
+        if tmpvar>0:
+            inputscaling = 1/np.sqrt(tmpvar)
+        monitor.update('inputscaling', inputscaling)
 
-    # determine the start of the actual processing
-    loop_time = time.time()
+    # scale the data to have approximately unit variance
+    # the scaling parameter is determined only once, and is the same for all channels
+    dat_input = dat_input * inputscaling
 
     # t = np.arange(sample_rate)
     # f = 440
     # signal = np.sin(t*f/sample_rate)*256
     # signal = np.zeros([sample_rate, 1])
 
-    # Add offset to avoid LP filter on sound card
+    # add offset to avoid LP filter on sound card
     tmp = [np.zeros(int(f_offset))]
 
     for ch in range(nInputs):
@@ -248,27 +278,57 @@ while True:
         convert = np.concatenate(channel) * profileCorrection[ch]
         tmp.append(convert)
 
-        if debug > 1:
-            print('time to process single channel: ' + str((time.time() - chan_time) * 1000))
+        monitor.trace('time to process single channel: ' + str((time.time() - chan_time) * 1000))
 
     signal_time = time.time()
     signal = np.fft.irfft(np.concatenate(tmp), int(sample_rate))
     dat_output = np.atleast_2d(signal).T.astype(np.float32)
 
-    if debug > 1:
-        print('time to inverse FFT: ' + str((time.time() - signal_time) * 1000))
+    monitor.debug('time to inverse FFT: ' + str((time.time() - signal_time) * 1000))
+
+    if outputscaling==0:
+        tmp = dat_output - dat_output.mean(axis=0)
+        tmpvar = max(tmp.var(axis=0))
+        if tmpvar>0:
+            outputscaling = 1/np.sqrt(tmpvar)
+        monitor.update('outputscaling', outputscaling)
+
+    # scale the data to have approximately unit variance
+    # the scaling parameter is determined only once
+    dat_output = dat_output * outputscaling
 
     write_time = time.time()
 
     # write the data to the output buffer
     ft_output.putData(dat_output)
 
-    if debug > 1:
-        print('time to write data to buffer: ' + str((time.time() - write_time) * 1000))
+    monitor.debug('time to write data to buffer: ' + str((time.time() - write_time) * 1000))
+    monitor.info("processed", window, "samples in", (time.time()-start)*1000, "ms")
 
     # increment the counters for the next loop
     begsample += window
     endsample += window
 
-    if debug > 0:
-	    print("processed", window, "samples in", (time.time()-loop_time)*1000, "ms")
+
+def _loop_forever():
+    '''Run the main loop forever
+    '''
+    while True:
+        _loop_once()
+
+
+def _stop():
+    '''Stop and clean up on SystemExit, KeyboardInterrupt
+    '''
+    global monitor, ft_input, ft_output
+
+    ft_input.disconnect()
+    monitor.success('Disconnected from input FieldTrip buffer')
+    ft_output.disconnect()
+    monitor.success('Disconnected from output FieldTrip buffer')
+
+
+if __name__ == '__main__':
+    _setup()
+    _start()
+    _loop_forever()

@@ -1,100 +1,157 @@
 import configparser
-import mido
 import os
 import sys
+import time
 import threading
+import math
 import numpy as np
-from scipy.signal import firwin, decimate, lfilter, lfilter_zi, lfiltic
-
-try:
-    # see https://trac.v2.nl/wiki/pyOSC
-    # this one is a bit difficult to install on Raspbian
-    import OSC
-except:
-    # this means that midiosc is not supported as midi backend
-    print("Warning: pyOSC not found")
+from scipy.signal import firwin, butter, decimate, lfilter, lfilter_zi, lfiltic, iirnotch
+from loguru import logger
 
 ###################################################################################################
-class midiwrapper():
-    """Class to provide a generalized interface to MIDI interfaces on the local computer
-    or to MIDI interfaces that are accessed on another computer over the network
-    using the midiosc application. It only supports sending, not receiving.
+def formatkeyval(key, val):
+    if sys.version_info < (3,0):
+        # this works in Python 2, but fails in Python 3
+        isstring = isinstance(val, basestring)
+    else:
+        # this works in Python 3, but fails for unicode strings in Python 2
+        isstring = isinstance(val, str)
+    if val is None:
+        output = "%s = None" % (key)
+    elif isinstance(val, list):
+        output = "%s = %s" % (key, str(val))
+    elif isstring:
+        output = "%s = %s" % (key, val)
+    else:
+        output = "%s = %g" % (key, val)
+    return output
+
+###################################################################################################
+def trimquotes(option):
+    # remove leading and trailing quotation marks
+    # this is needed to include leading or trailing spaces in an ini-file option
+    if option[0]=='"':
+        option = option[1:]
+    if option[0]=='\'':
+        option = option[1:]
+    if option[-1]=='"':
+        option = option[0:-1]
+    if option[-1]=='\'':
+        option = option[0:-1]
+    return option
+
+###################################################################################################
+class monitor():
+    """Class to monitor control values and print them to screen when they have changed. It also
+    prints a boilerplate license upon startup.
+
+    monitor.loop()           - to be called on every iteration of the loop
+    monitor.update(key, val) - to be used to check whether values change
+
+    monitor.error(...)     - shows always
+    monitor.warning(...)   - shows always
+    monitor.success(...)   - debug level 0
+    monitor.info(...)      - debug level 1
+    monitor.debug(...)     - debug level 2
+    monitor.trace(...)     - debug level 3
     """
 
-    def __init__(self, config):
-        self.config = config
-        self.outputport = None
-        try:
-            self.backend = config.get('midi', 'backend')
-        except configparser.NoOptionError:
-            self.backend = 'mido'
-        try:
-            self.debug = config.getint('general', 'debug')
-        except configparser.NoOptionError:
-            self.debug = 0
-
-    def open_output(self):
-        if self.backend == 'mido':
-            if self.debug>0:
-                print('------ OUTPUT ------')
-                for port in mido.get_output_names():
-                  print(port)
-                print('-------------------------')
-            try:
-                self.outputport  = mido.open_output(self.config.get('midi', 'device'))
-                print("Connected to MIDI output")
-            except:
-                print("Error: cannot connect to MIDI output")
-                raise RuntimeError("Error: cannot connect to MIDI output")
-
-        elif self.backend == 'midiosc':
-            try:
-                self.outputport = OSC.OSCClient()
-                self.outputport.connect((self.config.get('midi','hostname'), self.config.getint('midi','port')))
-                print("Connected to OSC server")
-            except:
-                print("Error: cannot connect to OSC server")
-                raise RuntimeErrror("cannot connect to OSC server")
-
+    def __init__(self, name=None, debug=0):
+        self.previous_value = {}
+        self.loop_time = None
+        # the prefix is added to the rest of the message, which is also a tuple
+        if name!=None:
+            self.prefix = name + ":"
         else:
-            print('Error: unsupported backend: ' + self.backend)
-            raise RuntimeError('unsupported backend: ' + self.backend)
+            self.prefix = ""
 
-    def send(self, mido_msg):
-        if self.backend == 'mido':
-            # send the message as is
-            self.outputport.send(mido_msg)
-        elif self.backend == 'midiosc':
-            # convert the message to an OSC message that "midiosc" understands
-            device_name  = self.config.get('midi', 'device').replace(' ', '_')
-            midi_channel = str(self.config.get('midi', 'channel'))
-            osc_address  = "/midi/" + device_name + "/" + str(mido_msg.channel)
-            osc_msg = OSC.OSCMessage(osc_address)
-            if mido_msg.type == 'control_change':
-                osc_msg.append('controller_change')
-                osc_msg.append(mido_msg.control)
-                osc_msg.append(mido_msg.value)
-            elif mido_msg.type == 'note_on':
-                osc_msg.append('note_on')
-                osc_msg.append(mido_msg.note)
-                osc_msg.append(mido_msg.velocity)
-            elif mido_msg.type == 'note_off':
-                osc_msg.append('note_off')
-                osc_msg.append(mido_msg.note)
-                osc_msg.append(mido_msg.velocity)
-            elif mido_msg.type == 'clock':
-                osc_msg.append('timing_tick')
-            elif mido_msg.type == 'pitchwheel':
-                osc_msg.append('pitch_bend')
-                osc_msg.append(mido_msg.pitch)
-            else:
-                raise RuntimeError('unsupported message type')
-            # send the OSC message, the receiving "midiosc" application will convert it back to MIDI
-            self.outputport.send(osc_msg)
+        logger.remove()
+        level = ['SUCCESS', 'INFO', 'DEBUG', 'TRACE']
+        logger.add(sys.stdout, format="{message}", level=level[debug])
+
+        print("""
+##############################################################################
+# This software is part of the EEGsynth, see <http://www.eegsynth.org>.
+#
+# Copyright (C) 2017-2020 EEGsynth project
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+##############################################################################
+
+Press Ctrl-C to stop this module.
+        """)
+
+    def loop(self, duration=None):
+        now = time.time()
+
+        if self.loop_time is None:
+            self.success("starting loop...")
+            self.loop_time = now
+            self.loop_count = 0
+            self.loop_start = time.time()
         else:
-            print('Error: unsupported backend: ' + self.backend)
-            raise RuntimeError('unsupported backend: ' + self.backend)
+            self.loop_count += 1
+        elapsed = now - self.loop_time
+        if elapsed>=1:
+            self.info("looping with %d iterations in %g seconds" % (self.loop_count, elapsed))
+            self.loop_time = now
+            self.loop_count = 0
+        if duration!=None and now-self.loop_start>duration:
+            raise SystemExit
 
+    def update(self, key, val):
+        if (key not in self.previous_value) or (self.previous_value[key]!=val):
+            try:
+                # the comparison returns false in case both are nan
+                a = math.isnan(self.previous_value[key])
+                b = math.isnan(val)
+                if (a and b):
+                    return False
+            except:
+                pass
+            self.info(formatkeyval(key, val))
+            self.previous_value[key] = val
+            return True
+        else:
+            return False
+
+    def error(self, *args):
+        args = (self.prefix, ) + args
+        logger.error(" ".join(map(format, args)))
+
+    def warning(self, *args):
+        args = (self.prefix, ) + args
+        logger.warning(" ".join(map(format, args)))
+
+    def success(self, *args):
+        args = (self.prefix, ) + args
+        logger.success(" ".join(map(format, args)))
+
+    def info(self, *args):
+        args = (self.prefix, ) + args
+        logger.info(" ".join(map(format, args)))
+
+    def debug(self, *args):
+        args = (self.prefix, ) + args
+        logger.debug(" ".join(map(format, args)))
+
+    def trace(self, *args):
+        args = (self.prefix, ) + args
+        logger.trace(" ".join(map(format, args)))
+
+    def print(self, *args):
+        print(self.prefix, *args)
 
 ###################################################################################################
 class patch():
@@ -103,14 +160,14 @@ class patch():
 
     The formatting of the item in the ini file should be like this
       item=1            this returns 1
-      item=key          get the value of the key from redis
+      item=key          get the value of the key from Redis
     or if multiple is True
       item=1-20         this returns [1,20]
       item=1,2,3        this returns [1,2,3]
       item=1,2,3,5-9    this returns [1,2,3,5,9], not [1,2,3,4,5,6,7,8,9]
-      item=key1,key2    get the value of key1 and key2 from redis
-      item=key1,5       get the value of key1 from redis
-      item=0,key2       get the value of key2 from redis
+      item=key1,key2    get the value of key1 and key2 from Redis
+      item=key1,5       get the value of key1 from Redis
+      item=0,key2       get the value of key2 from Redis
     """
 
     def __init__(self, c, r):
@@ -160,21 +217,23 @@ class patch():
         else:
             # the configuration file does not contain the item
             if multiple == True and default == None:
-                return []
+                val = []
             elif multiple == True and default != None:
-                return [float(x) for x in default]
+                val = [float(x) for x in default]
             elif multiple == False and default == None:
-                return None
+                val = None
             elif multiple == False and default != None:
-                return float(default)
+                val = float(default)
 
         if multiple:
             # return it as list
             return val
         else:
             # return a single value
-            return val[0]
-
+            if isinstance(val, list):
+                return val[0]
+            else:
+                return val
 
     ####################################################################
     def getint(self, section, item, multiple=False, default=None):
@@ -219,46 +278,59 @@ class patch():
         else:
             # the configuration file does not contain the item
             if multiple == True and default == None:
-                return []
+                val = []
             elif multiple == True and default != None:
-                return [int(x) for x in default]
+                val = [int(x) for x in default]
             elif multiple == False and default == None:
-                return None
+                val = None
             elif multiple == False and default != None:
-                return int(default)
+                val = int(default)
 
         if multiple:
             # return it as list
             return val
         else:
             # return a single value
-            return val[0]
+            if isinstance(val, list):
+                return val[0]
+            else:
+                return val
 
     ####################################################################
-    def getstring(self, section, item, multiple=False):
+    def getstring(self, section, item, default=None, multiple=False):
         # get all items from the ini file, there might be one or multiple
-        items = self.config.get(section, item)
+        try:
+            val = self.config.get(section, item)
+        except:
+            val = default
 
         if multiple:
-            # convert the items to a list
-            if items.find(",") > -1:
-                separator = ","
-            elif items.find("-") > -1:
-                separator = "-"
-            elif items.find("\t") > -1:
-                separator = "\t"
+            if val==None or len(val)==0:
+                # convert it to an empty list
+                val = []
             else:
-                separator = " "
+                # convert the string with items to a list
+                if val.find(",") > -1:
+                    separator = ","
+                elif val.find("-") > -1:
+                    separator = "-"
+                elif val.find("\t") > -1:
+                    separator = "\t"
+                else:
+                    separator = " "
 
-            items = squeeze(separator, items)  # remove double separators
-            items = items.split(separator)     # split on the separator
+                val = squeeze(separator, val)  # remove double separators
+                val = val.split(separator)     # split on the separator
 
+        if multiple:
             # return it as list
-            return items
-
+            return val
         else:
             # return a single value
-            return items
+            if isinstance(val, list):
+                return val[0]
+            else:
+                return val
 
     ####################################################################
     def hasitem(self, section, item):
@@ -266,18 +338,16 @@ class patch():
         return self.config.has_option(section, item)
 
     ####################################################################
-    def setvalue(self, item, val, debug=0, duration=0):
+    def setvalue(self, item, val, duration=0):
         self.redis.set(item, val)      # set it as control channel
         self.redis.publish(item, val)  # send it as trigger
-        if debug:
-            print(item, '=', val)
         if duration > 0:
             # switch off after a certain amount of time
             threading.Timer(duration, self.setvalue, args=[item, 0.]).start()
 
 
 ####################################################################
-def rescale(xval, slope=None, offset=None):
+def rescale(xval, slope=None, offset=None, reverse=False):
     if hasattr(xval, "__iter__"):
         return [rescale(x, slope, offset) for x in xval]
     elif xval == None:
@@ -287,7 +357,10 @@ def rescale(xval, slope=None, offset=None):
             slope = 1.0
         if offset==None:
             offset = 0.0
-        return float(slope)*float(xval) + float(offset)
+        if reverse:
+            return (float(xval) - float(offset))/float(slope)
+        else:
+            return float(slope)*float(xval) + float(offset)
 
 ####################################################################
 def limit(xval, lo=0.0, hi=127.0):
@@ -307,7 +380,7 @@ def limit(xval, lo=0.0, hi=127.0):
             return xval
 
 ####################################################################
-def compress(xval, lo=63.5, hi=63.5, range=127.0):
+def compress(xval, lo=0.5, hi=0.5, range=1.0):
     if hasattr(xval, "__iter__"):
         return [compress(x, lo, hi, range) for x in xval]
     else:
@@ -318,21 +391,21 @@ def compress(xval, lo=63.5, hi=63.5, range=127.0):
 
         if lo>range/2:
           ax = 0.0
-          ay = lo-(range+1)/2
+          ay = lo-range/2
         else:
-          ax = (range+1)/2-lo
+          ax = range/2-lo
           ay = 0.0
 
         if hi<range/2:
-          bx = (range+1)
-          by = (range+1)/2+hi
+          bx = range
+          by = range/2+hi
         else:
-          bx = 1.5*(range+1)-hi
-          by = (range+1)
+          bx = 1.5*range-hi
+          by = range
 
         if (bx-ax)==0:
             # threshold the value halfway
-            yval = (xval>63.5)*range
+            yval = (xval>0.5)*range
         else:
             # map the value according to a linear transformation
             slope     = (by-ay)/(bx-ax)
@@ -365,6 +438,37 @@ def squeeze(char, string):
     return string
 
 ####################################################################
+def initialize_online_notchfilter(fsample, fnotch, quality, x, axis=-1):
+    nyquist = fsample / 2.
+    ndim = len(x.shape)
+    axis = axis % ndim
+
+    if fnotch != None:
+        fnotch = fnotch/nyquist
+        if fnotch < 0.001:
+            fnotch = None
+        elif fnotch > 0.999:
+            fnotch = None
+
+    if not(fnotch == None) and (quality>0):
+        print('using NOTCH filter', [fnotch, quality])
+        b, a = iirnotch(fnotch, quality)
+    else:
+        # no filtering at all
+        print('using IDENTITY filter', [fnotch, quality])
+        b = np.ones(1)
+        a = np.ones(1)
+
+    # initialize the state for the filtering based on the previous data
+    if ndim == 1:
+        zi = zi = lfiltic(b, a, x, x)
+    elif ndim == 2:
+        f = lambda x : lfiltic(b, a, x, x)
+        zi = np.apply_along_axis(f, axis, x)
+
+    return b, a, zi
+
+####################################################################
 def initialize_online_filter(fsample, highpass, lowpass, order, x, axis=-1):
     # boxcar, triang, blackman, hamming, hann, bartlett, flattop, parzen, bohman, blackmanharris, nuttall, barthann
     filtwin = 'nuttall'
@@ -374,38 +478,42 @@ def initialize_online_filter(fsample, highpass, lowpass, order, x, axis=-1):
 
     if highpass != None:
         highpass = highpass/nyquist
-        if highpass < 0.01:
+        if highpass < 0.001:
+            print('Warning: highpass is too low, disabling')
             highpass = None
-        elif highpass > 0.99:
+        elif highpass > 0.999:
+            print('Warning: highpass is too high, disabling')
             highpass = None
 
     if lowpass != None:
         lowpass = lowpass/nyquist
-        if lowpass < 0.01:
+        if lowpass < 0.001:
+            print('Warning: lowpass is too low, disabling')
             lowpass = None
-        elif lowpass > 0.99:
+        elif lowpass > 0.999:
+            print('Warning: lowpass is too low, disabling')
             lowpass = None
 
     if not(highpass is None) and not(lowpass is None) and highpass>=lowpass:
         # totally blocking all signal
-        print('using NULL filter', [highpass, lowpass])
-        b = np.zeros(window)
+        print('using NULL filter', [highpass, lowpass, order])
+        b = np.zeros(order)
         a = np.ones(1)
     elif not(lowpass is None) and (highpass is None):
-        print('using lowpass filter', [highpass, lowpass])
+        print('using lowpass filter', [highpass, lowpass, order])
         b = firwin(order, cutoff = lowpass, window = filtwin, pass_zero = True)
         a = np.ones(1)
     elif not(highpass is None) and (lowpass is None):
-        print('using highpass filter', [highpass, lowpass])
+        print('using highpass filter', [highpass, lowpass, order])
         b = firwin(order, cutoff = highpass, window = filtwin, pass_zero = False)
         a = np.ones(1)
     elif not(highpass is None) and not(lowpass is None):
-        print('using bandpass filter', [highpass, lowpass])
+        print('using bandpass filter', [highpass, lowpass, order])
         b = firwin(order, cutoff = [highpass, lowpass], window = filtwin, pass_zero = False)
         a = np.ones(1)
     else:
         # no filtering at all
-        print('using IDENTITY filter', [highpass, lowpass])
+        print('using IDENTITY filter', [highpass, lowpass, order])
         b = np.ones(1)
         a = np.ones(1)
 
@@ -422,3 +530,108 @@ def initialize_online_filter(fsample, highpass, lowpass, order, x, axis=-1):
 def online_filter(b, a, x, axis=-1, zi=[]):
     y, zo = lfilter(b, a, x, axis=axis, zi=zi)
     return y, zo
+
+####################################################################
+def butter_bandpass(lowcut, highcut, fs, order=9):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    high = highcut / nyq
+    b, a = butter(order, [low, high], btype='band')
+    return b, a
+
+####################################################################
+def butter_lowpass(lowcut, fs, order=9):
+    nyq = 0.5 * fs
+    low = lowcut / nyq
+    b, a = butter(order, low, btype='lowpass')
+    return b, a
+
+####################################################################
+def butter_highpass(highcut, fs, order=9):
+    nyq = 0.5 * fs
+    high = highcut / nyq
+    b, a = butter(order, high, btype='highpass')
+    return b, a
+
+####################################################################
+def notch(f0, fs, Q=30):
+    # Q = Quality factor
+    w0 = f0 / (fs / 2)  # Normalized Frequency
+    b, a = iirnotch(w0, Q)
+    return b, a
+
+####################################################################
+def butter_bandpass_filter(dat, lowcut, highcut, fs, order=9):
+    '''
+    This filter does not retain state and is not optimal for online filtering.
+    '''
+    b, a = butter_bandpass(lowcut, highcut, fs, order=order)
+    y = lfilter(b, a, dat)
+    return y
+
+####################################################################
+def butter_lowpass_filter(dat, lowcut, fs, order=9):
+    '''
+    This filter does not retain state and is not optimal for online filtering.
+    '''
+    b, a = butter_lowpass(lowcut, fs, order=order)
+    y = lfilter(b, a, dat)
+    return y
+
+####################################################################
+def butter_highpass_filter(dat, highcut, fs, order=9):
+    '''
+    This filter does not retain state and is not optimal for online filtering.
+    '''
+    b, a = butter_highpass(highcut, fs, order=order)
+    y = lfilter(b, a, dat)
+    return y
+
+####################################################################
+def notch_filter(dat, f0, fs, Q=30, dir='onepass'):
+    '''
+    This filter does not retain state and is not optimal for online filtering.
+    The fiter direction can be specified as
+        'onepass'         forward filter only
+        'onepass-reverse' reverse filter only, i.e. backward in time
+        'twopass'         zero-phase forward and reverse filter
+        'twopass-reverse' zero-phase reverse and forward filter
+        'twopass-average' average of the twopass and the twopass-reverse
+    '''
+
+    b, a = notch(f0, fs, Q=Q)
+    if dir=='onepass':
+        y = lfilter(b, a, dat)
+    elif dir=='onepass-reverse':
+        y = dat
+        y = np.flip(y, 1)
+        y = lfilter(b, a, y)
+        y = np.flip(y, 1)
+    elif dir=='twopass':
+        y = dat
+        y = lfilter(b, a, y)
+        y = np.flip(y, 1)
+        y = lfilter(b, a, y)
+        y = np.flip(y, 1)
+    elif dir=='twopass-reverse':
+        y = dat
+        y = np.flip(y, 1)
+        y = lfilter(b, a, y)
+        y = np.flip(y, 1)
+        y = lfilter(b, a, y)
+    elif dir=='twopass-average':
+        # forward
+        y1 = dat
+        y1 = lfilter(b, a, y1)
+        y1 = np.flip(y1, 1)
+        y1 = lfilter(b, a, y1)
+        y1 = np.flip(y1, 1)
+        # reverse
+        y2 = dat
+        y2 = np.flip(y2, 1)
+        y2 = lfilter(b, a, y2)
+        y2 = np.flip(y2, 1)
+        y2 = lfilter(b, a, y2)
+        # average
+        y = (y1 + y2)/2
+    return y

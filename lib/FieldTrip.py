@@ -8,6 +8,7 @@ FieldTrip buffer (V1) client in pure Python
 import socket
 import struct
 import numpy
+import unicodedata
 
 VERSION = 1
 
@@ -88,11 +89,11 @@ def serialize(A):
 
         if A.flags['C_CONTIGUOUS']:
             # great, just use the array's buffer interface
-            return (ft, str(A.data))
+            return (ft, A.tostring())
 
         # otherwise, we need a copy to C order
         AC = A.copy('C')
-        return (ft, str(AC.data))
+        return (ft, AC.tostring())
 
     if isinstance(A, int):
         return (DATATYPE_INT32, struct.pack('i', A))
@@ -331,16 +332,18 @@ class Client:
     def putHeader(self, nChannels, fSample, dataType, labels=None,
                   chunks=None, reponse=True):
         haveLabels = False
-        extras = ''
+        extras = b''
 
         if (type(labels)==list) and (len(labels)==0):
             labels=None
 
         if not(labels is None):
-            serLabels = ''
+            serLabels = b''
+            for n in range(0, nChannels):
+                # ensure that labels are ascii strings, not unicode
+                serLabels += labels[n].encode('ascii', 'ignore') + b'\0'
             try:
-                for n in range(0, nChannels):
-                    serLabels += labels[n] + '\0'
+                pass
             except:
                 raise ValueError('Channels names (labels), if given,'
                                  ' must be a list of N=numChannels strings')
