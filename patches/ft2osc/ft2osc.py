@@ -157,10 +157,10 @@ while True:
         msg.append(list(D[:,1]))
         s.send(msg)
     else:
-        s.send_message("/ft/eeg1", D[:,0].tolist())
-        s.send_message("/ft/eeg2", D[:,1].tolist())
-        s.send_message("/ft/eeg3", D[:,2].tolist())
-        s.send_message("/ft/eog", D[:,3].tolist())
+        s.send_message("/ft/eeg1", D[:,0].tobytes())
+        s.send_message("/ft/eeg2", D[:,1].tobytes())
+        s.send_message("/ft/eeg3", D[:,2].tobytes())
+        s.send_message("/ft/eog", D[:,3].tobytes())
         
 
 
