@@ -157,10 +157,20 @@ while True:
         msg.append(list(D[:,1]))
         s.send(msg)
     else:
-        s.send_message("/ft/eeg1", D[:,0].tobytes())
-        s.send_message("/ft/eeg2", D[:,1].tobytes())
-        s.send_message("/ft/eeg3", D[:,2].tobytes())
-        s.send_message("/ft/eog", D[:,3].tobytes())
+        Dstr = np.array2string(D[:,0],separator=',',prefix='"',suffix = '"')
+        s.send_message("/ft/eeg1", Dstr)
+
+        Dstr = np.array2string(D[:,1],separator=',',prefix='"',suffix = '"')
+        s.send_message("/ft/eeg2", Dstr)
+
+        Dstr = np.array2string(D[:,2],separator=',',prefix='"',suffix = '"')
+        s.send_message("/ft/eeg3", Dstr)
+
+        Dstr = np.array2string(D[:,3],separator=',',prefix='"',suffix = '"')
+        s.send_message("/ft/eog", Dstr)
+
+        Dstr = np.array2string(D[:,4],separator=',',prefix='"',suffix = '"')
+        s.send_message("/ft/ecg", Dstr)
         
 
 
