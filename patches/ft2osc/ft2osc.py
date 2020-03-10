@@ -138,6 +138,7 @@ while True:
     endsample = hdr_input.nSamples - 1
     if endsample<window:
         # not enough data, try again in the next iteration
+        print("NOT ENOUGH DATA")
         continue
 
     begsample = endsample-window+1
@@ -157,6 +158,11 @@ while True:
         msg.append(list(D[:,1]))
         s.send(msg)
     else:
+
+        ## Rescaling and converting to int
+        scale = 10000
+        D= (scale * D).astype(np.int)
+
         Dstr = np.array2string(D[:,0],separator=',',prefix='"',suffix = '"')
         s.send_message("/ft/eeg1", Dstr)
 
