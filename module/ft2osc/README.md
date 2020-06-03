@@ -1,3 +1,3 @@
-# Output OSC Module
+# Fieldtrip to OSC Module
 
-This module sends control values from Redis to Open Sound Control (OSC).
+This module streams a fieldtrip buffer to Open Sound Control (OSC).
