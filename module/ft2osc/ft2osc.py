@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# ft2osc streams data from the fieldtrip data according to OSC protocol
+# ft2osc streams raw data from the fieldtrip buffer according to the OSC protocol
 #
 # This software is part of the EEGsynth project, see <https://github.com/eegsynth/eegsynth>.
 #
@@ -24,8 +24,8 @@ import argparse
 import os
 import redis
 import sys
-import threading
 import time
+import numpy as np 
 
 if sys.version_info < (3,6):
     import OSC
@@ -52,50 +52,14 @@ else:
 # eegsynth/lib contains shared modules
 sys.path.insert(0, os.path.join(path,'../../lib'))
 import EEGsynth
-
-
-class TriggerThread(threading.Thread):
-    def __init__(self, redischannel, name, osctopic):
-        threading.Thread.__init__(self)
-        self.redischannel = redischannel
-        self.name = name
-        self.osctopic = osctopic
-        self.running = True
-    def stop(self):
-        self.running = False
-    def run(self):
-        pubsub = r.pubsub()
-        pubsub.subscribe('OUTPUTOSC_UNBLOCK')  # this message unblocks the redis listen command
-        pubsub.subscribe(self.redischannel)     # this message contains the value of interest
-        while self.running:
-            for item in pubsub.listen():
-                if not self.running or not item['type'] == 'message':
-                    break
-                if item['channel']==self.redischannel:
-                    # map the Redis values to OSC values
-                    val = float(item['data'])
-                    # the scale and offset options are channel specific
-                    scale  = patch.getfloat('scale', self.name, default=1)
-                    offset = patch.getfloat('offset', self.name, default=0)
-                    # apply the scale and offset
-                    val = EEGsynth.rescale(val, slope=scale, offset=offset)
-
-                    monitor.update(self.osctopic, val)
-                    with lock:
-                        # send it as a string with a space as separator
-                        if sys.version_info < (3,6):
-                            msg = OSC.OSCMessage(self.osctopic)
-                            msg.append(val)
-                            s.send(msg)
-                        else:
-                            s.send_message(self.osctopic, val)
+import FieldTrip
 
 
 def _setup():
     '''Initialize the module
     This adds a set of global variables
     '''
-    global parser, args, config, r, response, patch
+    global parser, args, config, r, response, patch, ft_host, ft_port, ft_input,monitor
 
     parser = argparse.ArgumentParser()
     parser.add_argument("-i", "--inifile", default=os.path.join(path, name + '.ini'), help="name of the configuration file")
@@ -110,6 +74,23 @@ def _setup():
     except redis.ConnectionError:
         raise RuntimeError("cannot connect to Redis server")
 
+    # combine the patching from the configuration file and Redis
+    patch = EEGsynth.patch(config, r)
+
+    # this can be used to show parameters that have changed
+    monitor = EEGsynth.monitor(name=name, debug=patch.getint('general','debug'))
+
+    try:
+        ft_host = patch.getstring('fieldtrip', 'hostname')
+        ft_port = patch.getint('fieldtrip', 'port')
+        monitor.success('Trying to connect to buffer on %s:%i ...' % (ft_host, ft_port))
+        ft_input = FieldTrip.Client()
+        ft_input.connect(ft_host, ft_port)
+        monitor.success('Connected to input FieldTrip buffer')
+    except:
+        raise RuntimeError("cannot connect to input FieldTrip buffer")
+
+
     # there should not be any local variables in this function, they should all be global
     if len(locals()):
         print('LOCALS: ' + ', '.join(locals().keys()))
@@ -119,8 +100,30 @@ def _start():
     '''Start the module
     This uses the global variables from setup and adds a set of global variables
     '''
-    global parser, args, config, r, response, patch, name
-    global monitor, debug, s, list_input, list_output, list1, list2, list3, i, j, lock, trigger, key1, key2, key3, this, thread
+    global parser, args, config, r, response, patch, name, ft_host, ft_port, ft_input,timeout,hdr_input,begsample,endsample,channame,chanidx,chanosc
+    global monitor, debug, s,start, i, j,begsample,endsample
+    global s,list_input,list_output,window
+
+    # this is the timeout for the FieldTrip buffer
+    timeout = patch.getfloat('fieldtrip', 'timeout', default=30)
+
+    
+
+    hdr_input = None
+    start = time.time()
+    while hdr_input is None:
+        monitor.info('Waiting for data to arrive...')
+        if (time.time()-start) > timeout:
+            raise RuntimeError("timeout while waiting for data")
+        time.sleep(0.1)
+        hdr_input = ft_input.getHeader()
+
+    monitor.info("Data arrived")
+    monitor.debug(hdr_input)
+    monitor.debug(hdr_input.labels)
+
+    window = patch.getint('processing', 'window', default=2)
+    
 
     # combine the patching from the configuration file and Redis
     patch = EEGsynth.patch(config, r)
@@ -141,33 +144,22 @@ def _start():
     except:
         raise RuntimeError("cannot connect to OSC server")
 
-    # keys should be present in both the input and output section of the *.ini file
+    # channels should be present in both the input and output section of the *.ini file
     list_input  = config.items('input')
     list_output = config.items('output')
 
-    list1 = [] # the key name that matches in the input and output section of the *.ini file
-    list2 = [] # the key name in Redis
-    list3 = [] # the key name in OSC
+    channame = [] # the channel name that matches in the input and output section of the *.ini file
+    chanidx = [] # the channel number in the ft buffer
+    chanosc = [] # the key name in OSC
     for i in range(len(list_input)):
         for j in range(len(list_output)):
             if list_input[i][0]==list_output[j][0]:
-                list1.append(list_input[i][0])  # short name in the ini file
-                list2.append(list_input[i][1])  # redis channel
-                list3.append(list_output[j][1]) # osc topic
+                channame.append(list_input[i][0])  # short name in the ini file
+                chanidx.append(patch.getint('input', list_input[i][0])-1)  # channel number
+                chanosc.append(list_output[j][1]) # osc topic
 
-    # this is to prevent two messages from being sent at the same time
-    lock = threading.Lock()
-
-    # each of the Redis messages is mapped onto a different OSC topic
-    trigger = []
-    for key1, key2, key3 in zip(list1, list2, list3):
-        this = TriggerThread(key2, key1, key3)
-        trigger.append(this)
-        monitor.debug('trigger configured for ' + key1)
-
-    # start the thread for each of the triggers
-    for thread in trigger:
-        thread.start()
+    begsample = -1
+    endsample = -1
 
     # there should not be any local variables in this function, they should all be global
     if len(locals()):
@@ -178,9 +170,34 @@ def _loop_once():
     '''Run the main loop once
     This uses the global variables from setup and start, and adds a set of global variables
     '''
-    global monitor, patch
+    global monitor, patch,window
+    global hdr_input,ft_input,chanidx,chanosc,channame,begsample,endsample
+    global s
 
-    monitor.loop()
+    hdr_input = ft_input.getHeader()
+    if (hdr_input.nSamples - 1) < endsample:
+        raise RuntimeError("buffer reset detected")
+    if hdr_input.nSamples < window:
+        # there are not yet enough samples in the buffer
+        monitor.info("Waiting for data...")
+        return
+
+    # get the most recent data segment
+    begsample = hdr_input.nSamples - window
+    endsample = hdr_input.nSamples - 1
+    dat = ft_input.getData([begsample, endsample]).astype(np.double)
+    
+    monitor.info("Getting {} samples from Fieldtrip buffer...".format(window))
+
+    ## Send the data over OSC 
+    for idx,osctopic in enumerate(chanosc):
+        curdata = dat[:,chanidx[idx]]
+
+        Dstr = np.array2string(curdata,separator=',',prefix='"',suffix = '"')
+        s.send_message(osctopic,Dstr)
+
+        monitor.update(osctopic, curdata[0])
+
     time.sleep(patch.getfloat('general', 'delay'))
 
 
@@ -194,14 +211,11 @@ def _loop_forever():
 def _stop():
     '''Stop and clean up on SystemExit, KeyboardInterrupt
     '''
-    global monitor, trigger, r
+    global monitor, trigger, ft_input
 
-    monitor.success('Closing threads')
-    for thread in trigger:
-        thread.stop()
-    r.publish('OUTPUTOSC_UNBLOCK', 1)
-    for thread in trigger:
-        thread.join()
+    ft_input.disconnect()
+    monitor.success('Disconnected from input FieldTrip buffer')
+
     sys.exit()
 
 
@@ -210,5 +224,6 @@ if __name__ == '__main__':
     _start()
     try:
         _loop_forever()
-    except:
+    except Exception as e:
+        print(e)
         _stop()
