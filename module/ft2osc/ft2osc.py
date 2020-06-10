@@ -187,16 +187,16 @@ def _loop_once():
     endsample = hdr_input.nSamples - 1
     dat = ft_input.getData([begsample, endsample]).astype(np.double)
     
-    monitor.info("Getting {} samples from Fieldtrip buffer...".format(window))
+#    monitor.info("Getting {} samples from Fieldtrip buffer...".format(window))
+
+    monitor.info("Getting one sample from Fieldtrip buffer...".format(window))
 
     ## Send the data over OSC 
     for idx,osctopic in enumerate(chanosc):
         curdata = dat[:,chanidx[idx]]
 
-        Dstr = np.array2string(curdata,separator=',',prefix='"',suffix = '"')
-        s.send_message(osctopic,Dstr)
+        s.send_message(osctopic,curdata)
 
-        monitor.update(osctopic, curdata[0])
 
     time.sleep(patch.getfloat('general', 'delay'))
 

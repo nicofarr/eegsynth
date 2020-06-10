@@ -60,3 +60,4 @@ from . import volcabass
 from . import volcabeats
 from . import volcakeys
 from . import vumeter
+from . import ft2osc
