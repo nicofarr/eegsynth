@@ -102,7 +102,7 @@ def _start():
     '''Start the module
     This uses the global variables from setup and adds a set of global variables
     '''
-    global parser, args, config, r, response, patch, monitor, debug, ft_host, ft_port, ft_input, ft_output
+    global parser, args, config, r, response, patch, monitor, debug, ft_host, ft_port, ft_input, ft_output, name
     global timeout, hdr_input, start, window, downsample, differentiate, integrate, rectify, smoothing, reference, default_scale, scale_lowpass, scale_highpass, scale_notchfilter, offset_lowpass, offset_highpass, offset_notchfilter, scale_filterorder, scale_notchquality, offset_filterorder, offset_notchquality, previous, differentiate_zi, integrate_zi, begsample, endsample
 
     # this is the timeout for the FieldTrip buffer
@@ -208,7 +208,7 @@ def _loop_once():
     dat_output = dat_input
 
     monitor.trace("------------------------------------------------------------")
-    monitor.trace("read        ", window, "samples in", (time.time()-start)*1000, "ms")
+    monitor.trace("read        " + str(window) + " samples in " + str((time.time()-start)*1000) + " ms")
 
     # Online bandpass filtering
     highpassfilter = patch.getfloat('processing', 'highpassfilter', default=None)
@@ -295,8 +295,8 @@ def _loop_once():
     # write the data to the output buffer
     ft_output.putData(dat_output.astype(np.float32))
 
-    monitor.info("preprocessed", window_new, "samples in", (time.time()-start)*1000, "ms")
-    monitor.trace("wrote       ", window_new, "samples in", (time.time()-start)*1000, "ms")
+    monitor.info("preprocessed " + str(window_new) + " samples in " + str((time.time()-start)*1000) + " ms")
+    monitor.trace("wrote       " + str(window_new) + " samples in " + str((time.time()-start)*1000) + " ms")
 
     # increment the counters for the next loop
     begsample += window
@@ -319,9 +319,13 @@ def _stop():
     monitor.success('Disconnected from input FieldTrip buffer')
     ft_output.disconnect()
     monitor.success('Disconnected from output FieldTrip buffer')
+    sys.exit()
 
 
 if __name__ == '__main__':
     _setup()
     _start()
-    _loop_forever()
+    try:
+        _loop_forever()
+    except (SystemExit, KeyboardInterrupt, RuntimeError):
+        _stop()

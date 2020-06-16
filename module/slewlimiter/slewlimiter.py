@@ -106,8 +106,6 @@ def _loop_once():
     global parser, args, config, r, response, patch
     global monitor, prefix, input_name, input_variable, previous_val
 
-    monitor.loop()
-    time.sleep(patch.getfloat('general', 'delay'))
     lrate = patch.getfloat('processing', 'learning_rate', default=1)
 
     for name, variable in zip(input_name, input_variable):
@@ -130,17 +128,23 @@ def _loop_once():
 def _loop_forever():
     '''Run the main loop forever
     '''
+    global monitor, patch
     while True:
+        monitor.loop()
         _loop_once()
+        time.sleep(patch.getfloat('general', 'delay'))
 
 
 def _stop():
     '''Stop and clean up on SystemExit, KeyboardInterrupt
     '''
-    pass
+    sys.exit()
 
 
 if __name__ == '__main__':
     _setup()
     _start()
-    _loop_forever()
+    try:
+        _loop_forever()
+    except (SystemExit, KeyboardInterrupt, RuntimeError):
+        _stop()

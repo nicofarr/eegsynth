@@ -115,11 +115,12 @@ def _start():
     # this can be used to show parameters that have changed
     monitor = EEGsynth.monitor(name=name, debug=patch.getint('general', 'debug'))
 
-    # assign the initial values
-    for item in config.items('initial'):
-        val = patch.getfloat('initial', item[0])
-        patch.setvalue(item[0], val)
-        monitor.update(item[0], val)
+    if 'initial' in config.sections():
+        # assign the initial values
+        for item in config.items('initial'):
+            val = patch.getfloat('initial', item[0])
+            patch.setvalue(item[0], val)
+            monitor.update(item[0], val)
 
     # get the input and output options
     if len(config.items('input')):
@@ -136,10 +137,10 @@ def _start():
 
     monitor.info('===== input variables =====')
     for name,variable in zip(input_name, input_variable):
-        monitor.info(name, '=', variable)
+        monitor.info(name + ' = ' + variable)
     monitor.info('===== output equations =====')
     for name,equation in zip(output_name, output_equation):
-        monitor.info(name, '=', equation)
+        monitor.info(name + ' = ' + equation)
     monitor.info('============================')
 
     # there should not be any local variables in this function, they should all be global
@@ -153,9 +154,6 @@ def _loop_once():
     '''
     global parser, args, config, r, response, patch
     global monitor, input_name, input_variable, output_name, output_equation, variable, equation
-
-    monitor.loop()
-    time.sleep(patch.getfloat('general', 'delay'))
 
     monitor.debug('============================')
 
@@ -188,17 +186,23 @@ def _loop_once():
 def _loop_forever():
     '''Run the main loop forever
     '''
+    global monitor, patch
     while True:
+        monitor.loop()
         _loop_once()
+        time.sleep(patch.getfloat('general', 'delay'))
 
 
 def _stop():
     '''Stop and clean up on SystemExit, KeyboardInterrupt
     '''
-    pass
+    sys.exit()
 
 
 if __name__ == '__main__':
     _setup()
     _start()
-    _loop_forever()
+    try:
+        _loop_forever()
+    except (SystemExit, KeyboardInterrupt, RuntimeError):
+        _stop()

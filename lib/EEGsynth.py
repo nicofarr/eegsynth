@@ -1,3 +1,5 @@
+from __future__ import print_function
+
 import configparser
 import os
 import sys
@@ -6,7 +8,11 @@ import threading
 import math
 import numpy as np
 from scipy.signal import firwin, butter, decimate, lfilter, lfilter_zi, lfiltic, iirnotch
-from loguru import logger
+import logging
+from logging import Formatter
+import colorama
+import termcolor
+from termcolor import colored
 
 ###################################################################################################
 def formatkeyval(key, val):
@@ -41,6 +47,38 @@ def trimquotes(option):
     return option
 
 ###################################################################################################
+class ColoredFormatter(Formatter):
+    """Class to format logging messages
+    """
+
+    def __init__(self, name=None):
+        self.name = name
+        colors = list(termcolor.COLORS.keys()) # prevent RuntimeError: dictionary changed size during iteration
+        # add reverse and bright color
+        for color in colors:
+            termcolor.COLORS['reverse_'+color] = termcolor.COLORS[color]+10
+            termcolor.COLORS['bright_'+color] = termcolor.COLORS[color]+60
+        # for color in termcolor.COLORS.keys():
+        #     print(colored(color, color))
+
+    def format(self, record):
+        colors = {
+            'CRITICAL': 'reverse_red',
+            'ERROR': 'red',
+            'WARNING': 'yellow',
+            'SUCCESS': 'green',
+            'INFO': 'cyan',
+            'DEBUG': 'bright_grey',
+            'TRACE': 'reverse_white',
+        }
+        color = colors.get(record.levelname, 'white')
+        if self.name:
+            return colored(record.levelname, color) + ': ' + self.name + ': ' + record.getMessage()
+        else:
+            return colored(record.levelname, color) + ': ' + record.getMessage()
+
+
+###################################################################################################
 class monitor():
     """Class to monitor control values and print them to screen when they have changed. It also
     prints a boilerplate license upon startup.
@@ -48,6 +86,7 @@ class monitor():
     monitor.loop()           - to be called on every iteration of the loop
     monitor.update(key, val) - to be used to check whether values change
 
+    monitor.critical(...)  - shows always
     monitor.error(...)     - shows always
     monitor.warning(...)   - shows always
     monitor.success(...)   - debug level 0
@@ -59,19 +98,44 @@ class monitor():
     def __init__(self, name=None, debug=0):
         self.previous_value = {}
         self.loop_time = None
-        # the prefix is added to the rest of the message, which is also a tuple
-        if name!=None:
-            self.prefix = name + ":"
-        else:
-            self.prefix = ""
 
-        logger.remove()
-        level = ['SUCCESS', 'INFO', 'DEBUG', 'TRACE']
-        logger.add(sys.stdout, format="{message}", level=level[debug])
+        # If using Windows,this  will cause anything sent to stdout or stderr will have ANSI color codes converted to the Windows versions
+        colorama.init()
+
+        logger = logging.getLogger(__name__)
+        handler = logging.StreamHandler()
+        formatter = ColoredFormatter(name)
+        handler.setFormatter(formatter)
+        logger.addHandler(handler)
+
+        # add a success level
+        logging.SUCCESS = logging.INFO + 5
+        logging.addLevelName(logging.SUCCESS, 'SUCCESS')
+
+        # add a trace level
+        logging.TRACE = logging.DEBUG - 5
+        logging.addLevelName(logging.TRACE, 'TRACE')
+
+        # remember the logger
+        self.logger = logger
+
+        if debug==0:
+            logger.setLevel(logging.SUCCESS)
+        elif debug==1:
+            logger.setLevel(logging.INFO)
+        elif debug==2:
+            logger.setLevel(logging.DEBUG)
+        elif debug==3:
+            logger.setLevel(logging.TRACE)
+
+        if name == None:
+            fullname = 'This software'
+        else:
+            fullname = 'The %s module' % (name)
 
         print("""
 ##############################################################################
-# This software is part of the EEGsynth, see <http://www.eegsynth.org>.
+# %s is part of EEGsynth, see <http://www.eegsynth.org>.
 #
 # Copyright (C) 2017-2020 EEGsynth project
 #
@@ -90,7 +154,7 @@ class monitor():
 ##############################################################################
 
 Press Ctrl-C to stop this module.
-        """)
+        """ % (fullname))
 
     def loop(self, duration=None):
         now = time.time()
@@ -126,32 +190,47 @@ Press Ctrl-C to stop this module.
         else:
             return False
 
+    def critical(self, *args):
+        if len(args)==1:
+            self.logger.log(logging.CRITICAL, *args)
+        else:
+            self.logger.log(logging.CRITICAL, " ".join(map(format, args)))
+
     def error(self, *args):
-        args = (self.prefix, ) + args
-        logger.error(" ".join(map(format, args)))
+        if len(args)==1:
+            self.logger.log(logging.ERROR, *args)
+        else:
+            self.logger.log(logging.ERROR, " ".join(map(format, args)))
 
     def warning(self, *args):
-        args = (self.prefix, ) + args
-        logger.warning(" ".join(map(format, args)))
+        if len(args)==1:
+            self.logger.log(logging.WARNING, *args)
+        else:
+            self.logger.log(logging.WARNING, " ".join(map(format, args)))
 
     def success(self, *args):
-        args = (self.prefix, ) + args
-        logger.success(" ".join(map(format, args)))
+        if len(args)==1:
+            self.logger.log(logging.SUCCESS, *args)
+        else:
+            self.logger.log(logging.SUCCESS, " ".join(map(format, args)))
 
     def info(self, *args):
-        args = (self.prefix, ) + args
-        logger.info(" ".join(map(format, args)))
+        if len(args)==1:
+            self.logger.log(logging.INFO, *args)
+        else:
+            self.logger.log(logging.INFO, " ".join(map(format, args)))
 
     def debug(self, *args):
-        args = (self.prefix, ) + args
-        logger.debug(" ".join(map(format, args)))
+        if len(args)==1:
+            self.logger.log(logging.DEBUG, *args)
+        else:
+            self.logger.log(logging.DEBUG, " ".join(map(format, args)))
 
     def trace(self, *args):
-        args = (self.prefix, ) + args
-        logger.trace(" ".join(map(format, args)))
-
-    def print(self, *args):
-        print(self.prefix, *args)
+        if len(args)==1:
+            self.logger.log(logging.TRACE, *args)
+        else:
+            self.logger.log(logging.TRACE, " ".join(map(format, args)))
 
 ###################################################################################################
 class patch():

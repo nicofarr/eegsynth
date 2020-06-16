@@ -195,7 +195,6 @@ def _loop_once():
     This uses the global variables from setup and start, and adds a set of global variables
     '''
     global monitor, window
-
     monitor.loop()
     window.update()
 
@@ -217,5 +216,5 @@ if __name__ == '__main__':
     _start()
     try:
         _loop_forever()
-    except:
+    except (SystemExit, KeyboardInterrupt, RuntimeError):
         _stop()

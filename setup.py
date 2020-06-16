@@ -24,7 +24,7 @@ long_description = long_description.replace(
 
 setuptools.setup(
     name="eegsynth",
-    version="0.2.2",
+    version="0.3.1",
     description="Converting real-time EEG into sounds, music and visual effects",
     long_description=long_description,
     long_description_content_type="text/markdown",
@@ -68,27 +68,31 @@ setuptools.setup(
     packages=["eegsynth"] + ["eegsynth." + s for s in setuptools.find_packages(".")],
     install_requires=[
         "bitalino",
+        "colorama",
         "configparser",
         "fuzzywuzzy[speedup]",
-        "loguru",
         "matplotlib",
         "mido",
         "mido",
         "nilearn",
         "numpy",
-        "numpy",
         "paho-mqtt",
+        "pyaudio",
         "pylsl",
         "pyqtgraph",
         "pyserial",
-        "python-rtmidi",
-        "redis",
         "redis",
         "scipy",
         "sklearn",
-        "zmq",
+        "termcolor",
+        "pyzmq",
     ],
     python_requires=">=2.7",
+    extras_require={
+        ":python_version<'3.5'": ["pyOSC"],
+        ":python_version>='3.5'": ["python-rtmidi"],
+        ":python_version>='3.5'": ["python-osc"]
+    },
     entry_points={
         'console_scripts': [
             'eegsynth = eegsynth.bin.eegsynth:_main',
